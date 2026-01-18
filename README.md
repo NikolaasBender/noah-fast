@@ -1,4 +1,7 @@
-# AI Race Simulator
+> [!WARNING]
+> This is heavily vibe coded
+
+# 'AI' Race Simulator
 
 Determine the optimal pacing and fueling strategy for your next cycling race using Machine Learning.
 

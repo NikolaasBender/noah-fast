@@ -69,6 +69,8 @@ def fetch_activities(limit=10):
             df.attrs['activity_id'] = activity_id
             df.attrs['name'] = activity_name
             df.attrs['start_date'] = str(activity.start_date)
+            # Capture Gear ID (Bike)
+            df.attrs['gear_id'] = activity.gear_id if activity.gear_id else "Unknown"
             
             # Save to parquet
             df.to_parquet(file_path, index=False)

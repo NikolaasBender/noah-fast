@@ -10,11 +10,17 @@ from export.garmin import export_tcx
 app = Flask(__name__)
 MODEL_DIR = 'data/models'
 
+# Load Bike Profiles
+BIKE_PROFILES = {}
+try:
+    with open(os.path.join(MODEL_DIR, 'bike_profiles.json'), 'r') as f:
+        BIKE_PROFILES = json.load(f)
+except Exception as e:
+    print(f"Warning: Could not load bike profiles: {e}")
+
 # Load Model once at startup
 print("Loading Rider Model...")
 try:
-    # Check if we are in Docker or local? Path should be relative to where we run.
-    # Docker WORKDIR is /app (which maps to /home/nick/projects/race_simulator)
     phys = joblib.load(os.path.join(MODEL_DIR, 'physiology.pkl'))
     cp = phys['cp']
     w_prime = phys['w_prime']
@@ -26,11 +32,21 @@ except Exception as e:
 
 @app.route('/')
 def index():
-    return render_template('index.html', cp=int(cp), w_prime=int(w_prime))
+    return render_template('index.html', cp=int(cp), w_prime=int(w_prime), bikes=BIKE_PROFILES)
 
 @app.route('/generate', methods=['POST'])
 def generate():
     route_url = request.form.get('route_url')
+    gear_id = request.form.get('gear_id')
+    
+    # Rider Settings (with defaults)
+    try:
+        user_mass = float(request.form.get('rider_mass', 85.0))
+        user_cp = float(request.form.get('cp', cp))
+        user_w_prime = float(request.form.get('w_prime', w_prime))
+    except ValueError:
+        return "Error: Invalid number format for rider settings", 400
+    
     if not route_url:
         return "Error: No URL provided", 400
         
@@ -39,7 +55,7 @@ def generate():
         course_df = fetch_route(route_url)
         
         # 2. Optimize
-        plan_df = optimize_pacing(course_df, cp, w_prime)
+        plan_df = optimize_pacing(course_df, user_cp, user_w_prime, gear_id=gear_id, rider_mass=user_mass)
         
         # 3. Export to Memory
         mem = io.BytesIO()
