@@ -1,0 +1,10 @@
+stravalib==1.5
+pandas
+python-dotenv
+fastparquet
+pyarrow
+scikit-learn
+tensorflow
+joblib
+flask
+gunicorn

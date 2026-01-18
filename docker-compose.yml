@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  race-sim:
+    build: .
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Map port just in case we want to do a local web server later
+    ports:
+      - "8080:8080"

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv/
+.env
+
+# IntelliJ IDEA
+.idea/
+
+# VS Code
+.vscode/
+
+# MacOS
+.DS_Store
+
+# Project specific
+strava_tokens.json
+race_plan.tcx
+*.tcx
+data/models/*.pkl
+!data/models/.gitkeep
