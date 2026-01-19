@@ -62,6 +62,61 @@ def fetch_route(url_or_id):
     # Clamp extreme gradients (GPS errors)
     df['gradient'] = df['gradient'].clip(-25, 25)
     
+    # --- Surface Parsing ---
+    # Default to Paved
+    df['surface'] = 'Paved'
+    
+    course_points = data.get('course_points', [])
+    # Filter for surface markers if any (RWGPS often uses type='Surface' or notes)
+    # Heuristic: simple parsing. RWPGS sometimes puts surface in "n" (note) or "t" (type)
+    # We will assume a format where we can find "Gravel", "Dirt", "Paved" in the notes or type.
+    
+    surface_changes = []
+    if course_points:
+        for cp in course_points:
+            # d is distance in meters
+            dist = cp.get('d')
+            note = str(cp.get('n', '')).lower()
+            kind = str(cp.get('t', '')).lower()
+            
+            # Check keywords
+            s_type = None
+            if 'gravel' in note or 'gravel' in kind: s_type = 'Gravel'
+            elif 'dirt' in note or 'dirt' in kind: s_type = 'Dirt'
+            elif 'paved' in note or 'paved' in kind: s_type = 'Paved'
+            elif 'road' in note and 'unpaved' not in note: s_type = 'Paved'
+            
+            if s_type and dist is not None:
+                surface_changes.append((dist, s_type))
+                
+        # Sort by distance
+        surface_changes.sort(key=lambda x: x[0])
+        
+        # Apply changes
+        # Vectorized way is hard with non-uniform grid, simple iter logic:
+        # Paved (0) -> Gravel (10km) -> Paved (15km)...
+        if surface_changes:
+            current_surf = 'Paved'
+            # We can use pd.cut or searchsorted, but let's just iter rows for clarity or use a function
+            # Optimized: use searchsorted
+            dists = [x[0] for x in surface_changes]
+            surfs = [x[1] for x in surface_changes]
+            
+            # For each row, find index of last change
+            # np.searchsorted(dists, df['distance'], side='right') - 1
+            idx_surf = np.searchsorted(dists, df['distance'], side='right') - 1
+            
+            # Map index to surface. -1 means before first change (default Paved)
+            # Create a lookup array. We need to handle the -1 case.
+            # Add a dummy start if not present
+            if dists[0] > 0:
+                dists.insert(0, 0)
+                surfs.insert(0, 'Paved')
+                idx_surf = np.searchsorted(dists, df['distance'], side='right') - 1
+            
+            surf_array = np.array(surfs)
+            df['surface'] = surf_array[idx_surf]
+
     # Add metadata
     df.attrs['name'] = data.get('name', 'Unknown Route')
     df.attrs['id'] = route_id

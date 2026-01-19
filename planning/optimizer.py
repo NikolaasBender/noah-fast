@@ -63,16 +63,21 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
     current_seg = None
     
     for idx, row in resampled_df.iterrows():
+        # Handle missing surface if not present (defensive)
+        r_surf = row['surface'] if 'surface' in row else 'Paved'
+        
         if current_seg is None:
             current_seg = {
                 'type': row['type'],
+                'surface': r_surf,
                 'start_idx': idx,
                 'end_idx': idx,
                 'dist': 100,
                 'avg_grad': row['gradient']
             }
         else:
-            if row['type'] == current_seg['type']:
+            # Extend if Type AND Surface match
+            if row['type'] == current_seg['type'] and r_surf == current_seg['surface']:
                 # Extend
                 current_seg['end_idx'] = idx
                 current_seg['dist'] += 100
@@ -85,6 +90,7 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
                 # Start new
                 current_seg = {
                     'type': row['type'],
+                    'surface': r_surf,
                     'start_idx': idx,
                     'end_idx': idx,
                     'dist': 100,
@@ -127,46 +133,57 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
                 # Try to merge with Next
                 if i < len(segments) - 1:
                     next_seg = segments[i+1]
-                    # Merge Logic
-                    total_dist = seg['dist'] + next_seg['dist']
-                    w1 = seg['dist'] / total_dist
-                    w2 = next_seg['dist'] / total_dist
-                    avg_grad = seg['avg_grad'] * w1 + next_seg['avg_grad'] * w2
                     
-                    # New Type? Favor the larger one
-                    if next_seg['dist'] > seg['dist']:
-                        new_type = next_seg['type']
-                    else:
-                        new_type = seg['type']
+                    # Merge Logic (Require same surface!)
+                    if seg['surface'] == next_seg['surface']:
+                        total_dist = seg['dist'] + next_seg['dist']
+                        w1 = seg['dist'] / total_dist
+                        w2 = next_seg['dist'] / total_dist
+                        avg_grad = seg['avg_grad'] * w1 + next_seg['avg_grad'] * w2
                         
-                    merged = {
-                        'type': new_type,
-                        'start_idx': seg['start_idx'],
-                        'end_idx': next_seg['end_idx'],
-                        'dist': total_dist,
-                        'avg_grad': avg_grad,
-                        'duration_s': seg['duration_s'] + next_seg['duration_s']
-                    }
-                    new_segments.append(merged)
-                    skip = True # Skip next since we consumed it
-                    changed = True
-                else:
-                    # Last segment is short, merge with previous if exists
-                    if new_segments:
-                        prev = new_segments.pop()
-                        total_dist = prev['dist'] + seg['dist']
-                        w1 = prev['dist'] / total_dist
-                        w2 = seg['dist'] / total_dist
-                        avg_grad = prev['avg_grad'] * w1 + seg['avg_grad'] * w2
+                        # New Type? Favor the larger one
+                        if next_seg['dist'] > seg['dist']:
+                            new_type = next_seg['type']
+                        else:
+                            new_type = seg['type']
+                            
                         merged = {
-                            'type': prev['type'],
-                            'start_idx': prev['start_idx'],
-                            'end_idx': seg['end_idx'],
+                            'type': new_type,
+                            'surface': seg['surface'],
+                            'start_idx': seg['start_idx'],
+                            'end_idx': next_seg['end_idx'],
                             'dist': total_dist,
                             'avg_grad': avg_grad,
-                            'duration_s': prev['duration_s'] + seg['duration_s']
+                            'duration_s': seg['duration_s'] + next_seg['duration_s']
                         }
                         new_segments.append(merged)
+                        skip = True # Skip next since we consumed it
+                        changed = True
+                    else:
+                        # Cannot merge different surfaces
+                        new_segments.append(seg)
+                else:
+                    # Last segment is short, merge with previous if exists AND surface matches
+                    if new_segments:
+                        prev = new_segments[-1] # Peek
+                        if prev['surface'] == seg['surface']:
+                             prev = new_segments.pop()
+                             total_dist = prev['dist'] + seg['dist']
+                             w1 = prev['dist'] / total_dist
+                             w2 = seg['dist'] / total_dist
+                             avg_grad = prev['avg_grad'] * w1 + seg['avg_grad'] * w2
+                             merged = {
+                                 'type': prev['type'],
+                                 'surface': prev['surface'],
+                                 'start_idx': prev['start_idx'],
+                                 'end_idx': seg['end_idx'],
+                                 'dist': total_dist,
+                                 'avg_grad': avg_grad,
+                                 'duration_s': prev['duration_s'] + seg['duration_s']
+                             }
+                             new_segments.append(merged)
+                        else:
+                             new_segments.append(seg)
                     else:
                         new_segments.append(seg)
             else:
@@ -230,6 +247,15 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
     resampled['lat'] = np.interp(new_dist, course_df['distance'], course_df['lat'])
     resampled['lon'] = np.interp(new_dist, course_df['distance'], course_df['lon'])
     
+    # Map Categorical Surface
+    if 'surface' in course_df.columns:
+        # Find nearest index in course_df for each new_dist
+        idx = np.searchsorted(course_df['distance'], new_dist, side='right') - 1
+        idx[idx < 0] = 0
+        resampled['surface'] = course_df['surface'].iloc[idx].values
+    else:
+        resampled['surface'] = 'Paved'
+    
     # 2. Segment
     segments = create_smart_segments(resampled, cp, rider_mass=rider_mass)
     
@@ -248,7 +274,24 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
     
     cumulative_time = 0
     
+    # Surface Multipliers
+    SURFACE_CRR_MAP = {
+        'Paved': 1.0,
+        'Gravel': 1.6,
+        'Dirt': 1.8
+    }
+    
+    # ... (Segments loop) ...
     for seg_id, seg in enumerate(segments):
+        # Determine segment surface (majority wins or start point)
+        # Using the start idx to check surface in original resampled df
+        seg_start = seg['start_idx']
+        s_type = resampled.loc[seg_start, 'surface'] if 'surface' in resampled.columns else 'Paved'
+        crr_mult = SURFACE_CRR_MAP.get(s_type, 1.0)
+        
+        # Effective params for this segment
+        eff_crr = crr * crr_mult
+        
         # Base Power Strategy
         base_type = seg['type'].split(" ")[0] 
         grad = seg['avg_grad']
@@ -257,47 +300,47 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
             p_target = cp * 1.05 
             if grad > 6: p_target = cp * 1.15
         elif base_type == 'Descent':
-            p_target = cp * 0.1
-            if grad < -5: p_target = 0
+            # "Coasting Logic"
+            # When does gravity overcome resistance?
+            # F_gravity > F_roll + F_aero (at some V)
+            # F_g = m*g*sin(theta) ~ m*g*grad
+            # F_r = m*g*cos(theta)*Crr ~ m*g*Crr
+            # COAST THRESHOLD: when grad < -Crr (approx, in decimal)
+            # Paved Crr ~0.005 -> -0.5% grade
+            # Gravel Crr ~0.008 -> -0.8% grade
+            
+            coast_threshold_grade = -(eff_crr * 100)
+            
+            # If steeper than threshold (more negative), we can coast
+            if grad < coast_threshold_grade - 0.5: # buffer
+                p_target = 0 # Coast
+            elif grad < coast_threshold_grade: 
+                 p_target = cp * 0.1 # Soft pedal
+            else:
+                 # Shallow descent where friction dominates (esp gravel)
+                 # Treat closer to Flat
+                 p_target = cp * 0.70
+                 
         else: # Flat
             p_target = cp * 0.85
-            
-        # --- LSTM Check ---
-        # If we have a model, ask it: "Can I hold this p_target?"
-        # The LSTM was trained to predict "Target Power" given history.
-        # Use it to cap: predicted_sustainable_power
-        if lstm_model and len(recent_history) >= 30: # Need sequence
-             # Create input
-             # Sequence shape: (1, 60, 4) usually. Let's use last 60 steps if available.
-             seq_len = 60
-             if len(recent_history) < seq_len:
-                 # Pad
-                 hist_arr = np.array(recent_history[-len(recent_history):])
-                 # padding logic... skip for brevity or just use what we have if model allows
-                 # Assuming model expects 60.
-                 padding = np.tile(recent_history[0], (seq_len - len(recent_history), 1))
-                 seq = np.vstack([padding, hist_arr])
-             else:
-                 seq = np.array(recent_history[-seq_len:])
-             
-             seq = seq.reshape(1, seq_len, 4) # [watts, hr, cad, w_bal]
-             
-             # Scale? The training scaling was likely done. We need the Scaler artifact!
-             # Accessing scaler is complex inside this loop without huge refactor.
-             # PLAN B: Skip direct LSTM inference if scaler is missing.
-             # (User note: Full LSTM requiring scaler integration is risky in single step.
-             #  I will proceed with W' logic which IS robust, and placeholder LSTM logic).
-             pass
+            if s_type != 'Paved':
+               # Increase power slightly on flat gravel to maintain momentum/speed? 
+               # Or decrease to save energy? 
+               # Optimal control usually suggests smoothing effort. 
+               # Let's keep constant power -> resulting speed drops.
+               pass
+
+        # ... (LSTM Logic Placeholder) ...
 
         # Refine Power based on W' availability
-        speed = get_speed(p_target, grad, crr, cda, rider_mass)
+        speed = get_speed(p_target, grad, eff_crr, cda, rider_mass)
         duration = seg['dist'] / speed
         w_cost = (p_target - cp) * duration
         
         if p_target > cp:
             if current_w_bal - w_cost < 0:
                 p_target = cp * 0.98
-                speed = get_speed(p_target, grad, crr, cda, rider_mass)
+                speed = get_speed(p_target, grad, eff_crr, cda, rider_mass)
                 duration = seg['dist'] / speed
                 w_cost = (p_target - cp) * duration
         
@@ -331,7 +374,16 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
 
     # 4. Final Data Assembly
     resampled['watts'] = resampled['target_power']
-    resampled['speed_mps'] = resampled.apply(lambda r: get_speed(r['watts'], r['gradient'], crr, cda, rider_mass), axis=1)
+    
+    def calc_row_speed(r):
+        s_type = r['surface'] if 'surface' in r else 'Paved'
+        # Check against the local SURFACE_CRR_MAP if possible, or define again. 
+        # Since it's inside function scope, we can access it if defined above loop? 
+        # Yes, defined at line ~250.
+        mult = SURFACE_CRR_MAP.get(s_type, 1.0)
+        return get_speed(r['watts'], r['gradient'], crr * mult, cda, rider_mass)
+
+    resampled['speed_mps'] = resampled.apply(calc_row_speed, axis=1)
     resampled['duration_s'] = 100 / resampled['speed_mps']
     resampled['time_seconds'] = resampled['duration_s'].cumsum()
     
