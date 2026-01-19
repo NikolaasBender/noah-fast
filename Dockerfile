@@ -14,4 +14,4 @@ COPY . .
 EXPOSE 8080
 
 # Production Entrypoint
-CMD gunicorn --bind 0.0.0.0:${PORT:-8080} app:app
+CMD gunicorn --worker-class gevent --workers 1 --bind 0.0.0.0:${PORT:-8080} --timeout 120 app:app

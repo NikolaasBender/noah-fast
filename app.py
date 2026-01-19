@@ -273,7 +273,10 @@ def sync_stream():
 
 @app.route('/favicon.ico')
 def favicon():
-    return send_file('static/favicon.ico', mimetype='image/x-icon')
+    try:
+        return send_file('static/favicon.ico', mimetype='image/x-icon')
+    except FileNotFoundError:
+        return "No favicon", 404
 
 @app.route('/save_model', methods=['POST'])
 def save_model():

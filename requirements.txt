@@ -9,4 +9,6 @@ joblib
 flask
 gunicorn
 Flask-SQLAlchemy
-requests-mock
+Requests
+gevent
+colorlog
