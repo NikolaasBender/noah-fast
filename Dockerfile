@@ -14,4 +14,4 @@ COPY . .
 EXPOSE 8080
 
 # Production Entrypoint
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "app:app"]
+CMD gunicorn --bind 0.0.0.0:${PORT:-8080} app:app
