@@ -104,6 +104,13 @@ def index():
 def login():
     client = Client()
     redirect_uri = url_for('authorized', _external=True)
+    
+    # FORCE HTTPS in Production:
+    # If ProxyFix fails or headers are stripped, this ensures we send HTTPS to Strava
+    if os.environ.get('FLASK_ENV') == 'production' or os.environ.get('RAILWAY_ENVIRONMENT'):
+        if redirect_uri.startswith('http://'):
+             redirect_uri = redirect_uri.replace('http://', 'https://', 1)
+
     print(f"DEBUG: Generated Redirect URI: {redirect_uri}")
     
     authorize_url = client.authorization_url(
