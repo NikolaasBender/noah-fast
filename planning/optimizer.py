@@ -22,25 +22,83 @@ except:
 def get_speed(power, gradient_percent, crr=0.005, cda=0.32, rider_mass=85.0):
     """
     Estimates speed (m/s) for a given power and gradient using a simplified physics model.
+    Robust to descents (Newton-Raphson on Force Balance or Power Balance).
     """
 
     grad_decimal = gradient_percent / 100.0
-    sin_theta = np.sin(np.arctan(grad_decimal))
-    cos_theta = np.cos(np.arctan(grad_decimal))
+    # Small angle approx is usually fine, but let's keep trig
+    # But beware gradient_percent large inputs.
     
-    F_const = rider_mass * GRAVITY * (sin_theta + cos_theta * crr)
+    # Precompute constants
+    # mg * ...
+    # F_grav = mg sin(theta)
+    # F_roll = mg cos(theta) * Crr
+    # We define F_resist_constant (Gravity + Rolling)
+    # BE CAREFUL SIGNS: 
+    # Standard physics: P_total = P_aero + P_roll + P_grav
+    # P_grav = mg * v * sin(theta). (Positive if climbing).
+    # P_roll = mg * v * cos(theta) * Crr
     
-    # Newton-Raphson to solve for v
-    v = 10.0 # Initial guess
-    for _ in range(5):
-        # f(v) = 0.5*rho*cda*v^3 + F_const*v - P
-        fx = 0.5 * RHO * cda * v**3 + F_const * v - power
-        fpx = 1.5 * RHO * cda * v**2 + F_const
+    # Angles
+    theta = np.arctan(grad_decimal)
+    sin_theta = np.sin(theta)
+    cos_theta = np.cos(theta)
+    
+    # Forces
+    weight = rider_mass * GRAVITY
+    F_grav = weight * sin_theta
+    F_roll = weight * cos_theta * crr
+    
+    # F_static = F_grav + F_roll
+    # P_req = (0.5*rho*cda*v^2 + F_static) * v
+    #       = K*v^3 + F_static*v
+    
+    K = 0.5 * RHO * cda
+    F_static = F_grav + F_roll
+    
+    # If Power > 0, we can use Newton Raphson
+    # f(v) = K v^3 + F_static v - Power = 0
+    # f'(v) = 3 K v^2 + F_static
+    
+    # Initial guessing is critical. 
+    # If F_static is negative (Descent) and Power is small, v can be large.
+    # Terminal velocity (Power=0) -> K v^2 + F_static = 0 => v = sqrt(-F_static / K)
+    
+    if F_static < 0 and power == 0:
+         # Coasting on descent?
+         # Check if gravity overcomes rolling: F_grav + F_roll < 0 ?
+         # i.e. F_grav is negative enough (large descent) 
+         if F_static < 0:
+             return np.sqrt(-F_static / K)
+         else:
+             # Gravity not enough to overcome rolling, and no power -> Stop
+             return 0.1
+
+    v = 10.0 # Default guess
+    
+    # Descent Optimization: Better guess for descents
+    if F_static < 0:
+        # Guess terminal velocity approx
+        v_term = np.sqrt(abs(F_static)/K)
+        v = v_term
+
+    for _ in range(8): # Increased iterations
+        fx = K * v**3 + F_static * v - power
+        fpx = 3 * K * v**2 + F_static
         
-        if abs(fpx) < 1e-5: break # Avoid div/0
-        v = v - fx / fpx
+        if abs(fpx) < 1e-5: 
+            # Flat slope (inflection)? Nudge v
+            v += 1.0 
+            continue
+            
+        v_new = v - fx / fpx
         
-        if v < 0.1: v = 0.1 # Min speed
+        if abs(v_new - v) < 0.01:
+            return v_new
+            
+        v = v_new
+        
+        if v < 0.1: v = 0.1 # Clamp min
         
     return v
 

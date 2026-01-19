@@ -27,7 +27,7 @@ def fetch_recent_activities(client, limit=20, yield_progress=False):
         
         count = 0
         for summary_activity in activities:
-            if summary_activity.type != 'Ride':
+            if summary_activity.type not in ['Ride', 'VirtualRide']:
                 continue
                 
             activity_id = summary_activity.id

@@ -260,28 +260,116 @@ def sync_stream():
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
-@app.route('/generate', methods=['POST'])
-def generate():
-    route_url = request.form.get('route_url')
-    gear_id = request.form.get('gear_id')
+# Helper: Core Planning Logic
+def get_plan_dataframe(form):
+    route_url = form.get('route_url')
+    gear_id = form.get('gear_id')
     
     # Rider Settings (with defaults)
     try:
-        user_mass = float(request.form.get('rider_mass', 85.0))
-        user_cp = float(request.form.get('cp', cp))
-        user_w_prime = float(request.form.get('w_prime', w_prime))
+        user_mass = float(form.get('rider_mass', 85.0))
+        user_cp = float(form.get('cp', cp))
+        user_w_prime = float(form.get('w_prime', w_prime))
+        
+        # Delusion Logic (0-10 scale, each step adds 1%)
+        delusion_lvl = int(form.get('delusion', 0))
+        delusion_factor = 1.0 + (delusion_lvl * 0.01)
+        effective_cp = user_cp * delusion_factor
+        
     except ValueError:
-        return "Error: Invalid number format for rider settings", 400
-    
+        raise ValueError("Invalid number format for rider settings")
+        
     if not route_url:
-        return "Error: No URL provided", 400
+        raise ValueError("No URL provided")
         
+    # 1. Fetch
+    course_df = fetch_route(route_url)
+    
+    # 2. Optimize (Use Effective CP)
+    plan_df = optimize_pacing(course_df, effective_cp, user_w_prime, gear_id=gear_id, rider_mass=user_mass)
+    
+    # Attach Delusion Metadata for UI
+    if delusion_lvl > 0:
+        plan_df.attrs['delusion_level'] = delusion_lvl
+        plan_df.attrs['effective_cp'] = effective_cp
+    
+    return plan_df, course_df
+
+@app.route('/generate', methods=['POST'])
+def generate():
     try:
-        # 1. Fetch
-        course_df = fetch_route(route_url)
+        plan_df, course_df = get_plan_dataframe(request.form)
         
-        # 2. Optimize
-        plan_df = optimize_pacing(course_df, user_cp, user_w_prime, gear_id=gear_id, rider_mass=user_mass)
+        # Prepare Data for Preview Template
+        # Need to aggregate segments into a list of dicts for Jinja
+        # The optimizer returns resampled 100m chunks.
+        # We need to reconstruct the "Directives" / Segments from segment_id
+        
+        preview_segments = []
+        grouped = plan_df.groupby('segment_id')
+        
+        for seg_id, group in grouped:
+            if seg_id == -1: continue # Skip initialization rows if any
+            
+            first = group.iloc[0]
+            
+            # Extract Cues (stored in the first row of segment usually, or we reconstruct)
+            # The 'cues' column already has formatted text like "Seg 1: Flat (4m) @ 200W"
+            # But let's verify if cues are populated on first row of chunk
+            
+            # Reconstruct cleaner object for UI
+            avg_power = group['watts'].mean()
+            duration_s = group['duration_s'].sum()
+            dist_km = group['distance'].min() / 1000.0
+            
+            # Determine type from cues or infer
+            s_type = first['cues'].split(':')[1].split('(')[0].strip() if ':' in first['cues'] else "Segment"
+            surface = first['surface'] if 'surface' in first else 'Paved'
+            
+            avg_grad = group['gradient'].mean()
+            
+            notes = ""
+            if s_type == 'Descent' and avg_grad < -5:
+                notes = "High Speed Descent - Tuck!"
+            if surface == 'Gravel':
+                notes = "Loose Surface - Maintain Momentum"
+                
+            seg_obj = {
+                'id': seg_id + 1,
+                'start_dist_km': f"{dist_km:.1f}",
+                'type': s_type,
+                'type_class': s_type.split(' ')[0], # Climb, Descent, Flat
+                'surface': surface,
+                'power': int(avg_power),
+                'duration_str': f"{int(duration_s // 60)}m {int(duration_s % 60)}s",
+                'avg_grad': f"{avg_grad:.1f}",
+                'notes': notes
+            }
+            preview_segments.append(seg_obj)
+            
+        # Overall Stats
+        total_time_s = plan_df['duration_s'].sum()
+        avg_p = plan_df['watts'].mean()
+        total_carbs = plan_df['carbs_hr'].mean() * (total_time_s/3600.0)
+        
+        return render_template('plan_preview.html', 
+                             segments=preview_segments,
+                             route_name=course_df.attrs.get('name', 'Route'),
+                             total_time_str=f"{int(total_time_s//3600)}h {int((total_time_s%3600)//60)}m",
+                             avg_power=int(avg_p),
+                             total_carbs=int(total_carbs),
+                             delusion_level=plan_df.attrs.get('delusion_level', 0),
+                             effective_cp=int(plan_df.attrs.get('effective_cp', 0))
+                             )
+        
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error creating preview: {str(e)}", 500
+
+@app.route('/generate_file', methods=['POST'])
+def generate_file():
+    try:
+        plan_df, course_df = get_plan_dataframe(request.form)
         
         # 3. Export to Memory
         mem = io.BytesIO()

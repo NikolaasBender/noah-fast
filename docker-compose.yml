@@ -5,6 +5,7 @@ services:
     build: .
     volumes:
       - .:/app
+    command: gunicorn --workers 1 --bind 0.0.0.0:8080 --timeout 300 app:app
     environment:
       - PYTHONUNBUFFERED=1
     # Map port just in case we want to do a local web server later

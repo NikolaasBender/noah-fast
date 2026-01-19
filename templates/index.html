@@ -91,22 +91,68 @@
 
                             <hr class="my-4">
                             <h4 class="mb-3">Rider Settings (Guest Mode)</h4>
-                            <div class="row g-3 mb-4">
-                                <div class="col-md-4">
+                            <div class="row row-cols-1 row-cols-md-2 g-4 mb-4">
+                                <div class="col">
                                     <label for="rider_mass" class="form-label">Weight (kg)</label>
                                     <input type="number" class="form-control" id="rider_mass" name="rider_mass"
                                         value="85" step="0.1">
                                 </div>
-                                <div class="col-md-4">
+                                <div class="col">
                                     <label for="cp" class="form-label">Critical Power (W)</label>
                                     <input type="number" class="form-control" id="cp" name="cp" value="{{ cp }}">
                                 </div>
-                                <div class="col-md-4">
+                                <div class="col">
                                     <label for="w_prime" class="form-label">W' (Joules)</label>
                                     <input type="number" class="form-control" id="w_prime" name="w_prime"
                                         value="{{ w_prime }}">
                                 </div>
+                                <div class="col">
+                                    <label for="delusion" class="form-label d-flex justify-content-between">
+                                        <span>Delusion Level</span>
+                                        <span class="badge bg-warning text-dark" id="delusionVal">0/10</span>
+                                    </label>
+                                    <div class="position-relative mb-2">
+                                        <input type="range" class="form-range" id="delusion" name="delusion" min="0"
+                                            max="10" step="1" value="0" list="markers"
+                                            oninput="updateDelusion(this.value)">
+
+                                        <!-- Legend Track -->
+                                        <div class="d-flex justify-content-between small text-secondary"
+                                            style="font-size: 0.7rem; margin-top: -5px;">
+                                            <span>Solo</span>
+                                            <span
+                                                style="position: absolute; left: 40%; transform: translateX(-50%); font-weight: bold; color: #198754;">Group<br>(lvl
+                                                4)</span>
+                                            <span>Motor</span>
+                                        </div>
+                                    </div>
+
+                                    <datalist id="markers">
+                                        <option value="0"></option>
+                                        <option value="4"></option>
+                                        <option value="10"></option>
+                                    </datalist>
+                                    <div class="form-text small mt-3" id="delusionHelp">Boosts CP above history. Level 4
+                                        (+4%) matches group draft.</div>
+                                </div>
                             </div>
+
+                            <script>
+                                function updateDelusion(val) {
+                                    let text = val + '/10';
+                                    let help = "Boosts CP above history. Level 4 (+4%) matches group draft.";
+
+                                    if (val == 4) {
+                                        text += " (Group Ride 🚴)";
+                                        help = "You selected Group Ride Mode!";
+                                    } else if (val >= 8) {
+                                        help = "Hope you have a motor!";
+                                    }
+
+                                    document.getElementById('delusionVal').innerText = text;
+                                    document.getElementById('delusionHelp').innerText = help;
+                                }
+                            </script>
 
                             <div class="d-grid gap-2">
                                 <button type="submit" class="btn btn-primary btn-lg">Generate .TCX File</button>
