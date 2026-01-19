@@ -104,11 +104,14 @@ def index():
 def login():
     client = Client()
     redirect_uri = url_for('authorized', _external=True)
+    print(f"DEBUG: Generated Redirect URI: {redirect_uri}")
+    
     authorize_url = client.authorization_url(
         client_id=CLIENT_ID,
         redirect_uri=redirect_uri,
         scope=['read_all','profile:read_all','activity:read_all']
     )
+    print(f"DEBUG: Authorize URL: {authorize_url}")
     return redirect(authorize_url)
 
 @app.route('/authorized')
