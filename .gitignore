@@ -21,8 +21,5 @@ strava_tokens.json
 race_plan.tcx
 *.tcx
 
-# Data (Keep structure but ignore content)
-data/models/*
-!data/models/.gitkeep
-data/raw/*
-!data/raw/.gitkeep
+data/
+*.csv

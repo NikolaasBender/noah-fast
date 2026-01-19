@@ -34,12 +34,14 @@ def main():
     print(f"Loaded {len(activities)} activities.")
     
     if not activities:
-        print("No data found!")
+        print("No activities found.")
         return
 
     # 1. Calculate Physiology Baseline
     print("Extracting Power Profile...")
-    durations, powers = extract_power_profile(activities)
+    # Combine all activities into one DF for the physiology model
+    combined_activities = pd.concat(activities)
+    durations, powers = extract_power_profile(combined_activities)
     
     print("Calculating CP and W'...")
     cp, w_prime = calculate_cp_and_w_prime(durations, powers)

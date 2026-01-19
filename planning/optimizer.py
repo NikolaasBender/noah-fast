@@ -23,6 +23,7 @@ def get_speed(power, gradient_percent, crr=0.005, cda=0.32, rider_mass=85.0):
     """
     Estimates speed (m/s) for a given power and gradient using a simplified physics model.
     """
+
     grad_decimal = gradient_percent / 100.0
     sin_theta = np.sin(np.arctan(grad_decimal))
     cos_theta = np.cos(np.arctan(grad_decimal))
@@ -43,7 +44,7 @@ def get_speed(power, gradient_percent, crr=0.005, cda=0.32, rider_mass=85.0):
         
     return v
 
-def create_smart_segments(resampled_df, cp):
+def create_smart_segments(resampled_df, cp, rider_mass=85.0):
     """
     Groups the 100m chunks into logical segments (4-20 mins).
     """
@@ -56,6 +57,7 @@ def create_smart_segments(resampled_df, cp):
         
     resampled_df['type'] = resampled_df['gradient'].apply(classify)
     
+    # ... (Run length encoding is same) ...
     # 2. Run-Length Encoding (Merge adjacent same types)
     segments = []
     current_seg = None
@@ -92,14 +94,8 @@ def create_smart_segments(resampled_df, cp):
     
     # 3. Time Estimation (Pre-Merge)
     # Estimate duration based on CP (steady state proxy)
-    # We need a temporary speed function here or use fixed estimates
     def est_speed(p, g):
-        # Simplified for segmentation logic
-        # 300W at 0% -> ~10m/s. 
-        # 300W at 5% -> ~5m/s.
-        # Linear approx sufficient for segmentation grouping? Or use the real get_speed?
-        # Let's use get_speed with default constants for segmentation decisions
-        return get_speed(p, g)
+        return get_speed(p, g, rider_mass=rider_mass)
 
     for seg in segments:
         # heuristic power
@@ -235,7 +231,7 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
     resampled['lon'] = np.interp(new_dist, course_df['distance'], course_df['lon'])
     
     # 2. Segment
-    segments = create_smart_segments(resampled, cp)
+    segments = create_smart_segments(resampled, cp, rider_mass=rider_mass)
     
     # 3. Assign Power & Simulate
     current_w_bal = w_prime

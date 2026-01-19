@@ -31,75 +31,95 @@
         <div class="container">
             <h1 class="display-4 fw-bold">AI Race Simulator</h1>
             <p class="lead">Optimized pacing strategies powered by Machine Learning.</p>
-        </div>
-    </div>
+            <p class="text-center text-secondary mb-5">AI-Powered Cycling Pacing Strategy Optimizer</p>
 
-    <div class="container">
-        <div class="row justify-content-center">
-            <div class="col-md-8">
-                <div class="card p-4">
-                    <h3 class="mb-4">Generate Your Race Plan</h3>
+            <div class="row justify-content-center">
+                <div class="col-lg-8">
 
-                    <div class="alert alert-info">
-                        <strong>Rider Profile Loaded:</strong> CP: {{ cp }} W | W': {{ w_prime }} J
+                    <div class="card mb-4 shadow-sm">
+                        <div class="card-body text-center">
+                            {% if user %}
+                            <h5 class="card-title text-success">Welcome, {{ user.firstname }}!</h5>
+                            <p class="card-text text-muted">Connected to Strava. Your models are ready.</p>
+                            <div class="d-grid gap-2 d-sm-flex justify-content-sm-center">
+                                <a href="/sync" class="btn btn-primary btn-sm">Sync Latest Rides</a>
+                                <a href="/logout" class="btn btn-outline-danger btn-sm">Disconnect</a>
+                            </div>
+                            {% else %}
+                            <h5 class="card-title">Personalize Your Plan</h5>
+                            <p class="card-text text-muted">Connect Strava to learn your physics & physiology.</p>
+                            <a href="/login" class="btn btn-warning"
+                                style="background-color: #fc4c02; color: white; border: none;">
+                                Connect with Strava
+                            </a>
+                            {% endif %}
+                        </div>
                     </div>
 
-                    <form action="/generate" method="POST" target="_blank">
-                        <div class="mb-3">
-                            <label for="route_url" class="form-label">RideWithGPS Route URL</label>
-                            <input type="url" class="form-control form-control-lg" id="route_url" name="route_url"
-                                placeholder="https://ridewithgps.com/routes/50057635" required>
-                            <div class="form-text">Paste the full URL of a public route.</div>
-                        </div>
+                    <div class="card shadow">
+                        <div class="card-body p-5">
+                            <h3 class="mb-4">Generate Your Race Plan</h3>
 
-                        <div class="mb-4">
-                            <label for="gear_id" class="form-label">Select Bike Profile</label>
-                            <select class="form-select form-select-lg" name="gear_id" id="gear_id">
-                                <option value="" selected>Default Physics (Generic)</option>
-                                {% for id, profile in bikes.items() %}
-                                <option value="{{ id }}">
-                                    {{ profile.name }} (Crr: {{ "%.4f"|format(profile.crr) }}, CdA: {{
-                                    "%.3f"|format(profile.cda) }})
-                                </option>
-                                {% endfor %}
-                            </select>
-                            <div class="form-text">Physics learned from your Strava history.</div>
-                        </div>
-
-                        <hr class="my-4">
-                        <h4 class="mb-3">Rider Settings (Guest Mode)</h4>
-                        <div class="row g-3 mb-4">
-                            <div class="col-md-4">
-                                <label for="rider_mass" class="form-label">Weight (kg)</label>
-                                <input type="number" class="form-control" id="rider_mass" name="rider_mass" value="85"
-                                    step="0.1">
+                            <div class="alert alert-info">
+                                <strong>Rider Profile Loaded:</strong> CP: {{ cp }} W | W': {{ w_prime }} J
                             </div>
-                            <div class="col-md-4">
-                                <label for="cp" class="form-label">Critical Power (W)</label>
-                                <input type="number" class="form-control" id="cp" name="cp" value="{{ cp }}">
-                            </div>
-                            <div class="col-md-4">
-                                <label for="w_prime" class="form-label">W' (Joules)</label>
-                                <input type="number" class="form-control" id="w_prime" name="w_prime"
-                                    value="{{ w_prime }}">
-                            </div>
+
+                            <form action="/generate" method="POST" target="_blank">
+                                <div class="mb-3">
+                                    <label for="route_url" class="form-label">RideWithGPS Route URL</label>
+                                    <input type="url" class="form-control form-control-lg" id="route_url"
+                                        name="route_url" placeholder="https://ridewithgps.com/routes/50057635" required>
+                                    <div class="form-text">Paste the full URL of a public route.</div>
+                                </div>
+
+                                <div class="mb-4">
+                                    <label for="gear_id" class="form-label">Select Bike Profile</label>
+                                    <select class="form-select form-select-lg" name="gear_id" id="gear_id">
+                                        <option value="" selected>Default Physics (Generic)</option>
+                                        {% for id, profile in bikes.items() %}
+                                        <option value="{{ id }}">
+                                            {{ profile.name }} (Crr: {{ "%.4f"|format(profile.crr) }}, CdA: {{
+                                            "%.3f"|format(profile.cda) }})
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                    <div class="form-text">Physics learned from your Strava history.</div>
+                                </div>
+
+                                <hr class="my-4">
+                                <h4 class="mb-3">Rider Settings (Guest Mode)</h4>
+                                <div class="row g-3 mb-4">
+                                    <div class="col-md-4">
+                                        <label for="rider_mass" class="form-label">Weight (kg)</label>
+                                        <input type="number" class="form-control" id="rider_mass" name="rider_mass"
+                                            value="85" step="0.1">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="cp" class="form-label">Critical Power (W)</label>
+                                        <input type="number" class="form-control" id="cp" name="cp" value="{{ cp }}">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="w_prime" class="form-label">W' (Joules)</label>
+                                        <input type="number" class="form-control" id="w_prime" name="w_prime"
+                                            value="{{ w_prime }}">
+                                    </div>
+                                </div>
+
+                                <div class="d-grid gap-2">
+                                    <button type="submit" class="btn btn-primary btn-lg">Generate .TCX File</button>
+                                </div>
+                            </form>
                         </div>
 
-                        <div class="d-grid gap-2">
-                            <button type="submit" class="btn btn-primary btn-lg">Generate .TCX File</button>
+                        <div class="mt-4 text-center text-muted">
+                            <small>
+                                The generated file works with Garmin Edge devices.<br>
+                                Includes intelligent pacing and nutrition alerts.
+                            </small>
                         </div>
-                    </form>
-                </div>
-
-                <div class="mt-4 text-center text-muted">
-                    <small>
-                        The generated file works with Garmin Edge devices.<br>
-                        Includes intelligent pacing and nutrition alerts.
-                    </small>
+                    </div>
                 </div>
             </div>
-        </div>
-    </div>
 
 </body>
 

@@ -1,25 +1,19 @@
-import os
 import pandas as pd
-from auth import authenticate
 import time
 
-DATA_DIR = 'data/raw'
-
-def ensure_data_dir():
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
-
-def fetch_activities(limit=10):
-    client = authenticate()
+def fetch_recent_activities(client, limit=50):
+    """
+    Fetches recent activities and their streams into a single DataFrame in memory.
+    """
     if not client:
-        return
+        return pd.DataFrame()
 
     print(f"Fetching last {limit} videos... just kidding, activities.")
     
     # Get activities
     activities = client.get_activities(limit=limit)
     
-    ensure_data_dir()
+    frames = []
 
     for activity in activities:
         activity_id = activity.id
@@ -30,12 +24,6 @@ def fetch_activities(limit=10):
         if activity_type not in ['Ride', 'VirtualRide']:
             continue
             
-        file_path = os.path.join(DATA_DIR, f"{activity_id}.parquet")
-        
-        if os.path.exists(file_path):
-            print(f"Skipping {activity_id} ({activity_name}) - already exists")
-            continue
-
         print(f"Downloading {activity_id} ({activity_name})...")
         
         try:
@@ -56,31 +44,29 @@ def fetch_activities(limit=10):
             for key in ['distance', 'watts', 'heartrate', 'cadence', 'altitude', 'grade_smooth', 'velocity_smooth', 'moving']:
                 if key in streams:
                     data[key] = streams[key].data
-                else:
-                    # Fill missing streams with None/NaN if necessary, or just omit
-                    # For a simple dataframe construction, lengths must match.
-                    # Strava streams usually match length of 'time' if returned.
-                     pass
 
             # Create DataFrame
             df = pd.DataFrame(data)
             
-            # Add metadata
-            df.attrs['activity_id'] = activity_id
-            df.attrs['name'] = activity_name
-            df.attrs['start_date'] = str(activity.start_date)
-            # Capture Gear ID (Bike)
-            df.attrs['gear_id'] = activity.gear_id if activity.gear_id else "Unknown"
+            # Add metadata as columns (safer for concatenation)
+            df['activity_id'] = activity_id
+            df['gear_id'] = activity.gear_id if activity.gear_id else "Unknown"
+            df['start_date'] = activity.start_date
             
-            # Save to parquet
-            df.to_parquet(file_path, index=False)
-            print(f"Saved {file_path}")
+            frames.append(df)
             
             # Rate limiting
-            time.sleep(1) 
+            time.sleep(0.5) 
 
         except Exception as e:
             print(f"Failed to download {activity_id}: {e}")
 
+    if frames:
+        return pd.concat(frames, ignore_index=True)
+    else:
+        return pd.DataFrame()
+
 if __name__ == "__main__":
-    fetch_activities(limit=50) # Start with 50 recent rides
+    # Test stub (requires manual client injection if run directly)
+    print("This module is now a library function.")
+

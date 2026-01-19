@@ -13,9 +13,9 @@ def get_best_power_for_duration(power_stream, duration_seconds):
     rolling_power = power_stream.rolling(window=duration_seconds).mean()
     return rolling_power.max()
 
-def extract_power_profile(activities_df_list):
+def extract_power_profile(combined_df):
     """
-    Given a list of activity DataFrames (with 'watts' column), 
+    Given a single DataFrame with multiple activities (distinguished by 'activity_id'), 
     extracts the global Mean Maximal Power (MMP) curve.
     Returns: (durations, max_powers)
     """
@@ -23,7 +23,16 @@ def extract_power_profile(activities_df_list):
     durations = [1, 5, 10, 30, 60, 120, 180, 300, 600, 1200, 1800, 2400, 3600]
     global_mmp = {d: 0 for d in durations}
 
-    for df in activities_df_list:
+    if combined_df.empty:
+        return np.array([]), np.array([])
+        
+    if 'activity_id' not in combined_df.columns:
+        # Single activity without ID? Treat as one
+        grouped = [('single', combined_df)]
+    else:
+        grouped = combined_df.groupby('activity_id')
+
+    for _, df in grouped:
         if 'watts' not in df.columns:
             continue
             
