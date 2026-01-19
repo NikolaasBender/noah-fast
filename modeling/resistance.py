@@ -2,21 +2,22 @@ import pandas as pd
 import numpy as np
 from scipy.optimize import curve_fit
 
-def learn_bike_physics(df):
+def learn_bike_physics(df, gear_map=None):
     """
     Learns physics parameters (Crr, CdA) for each gear_id in the provided DataFrame.
+    Args:
+        df: DataFrame with activities
+        gear_map: Optional dict mapping gear_id -> gear_name
     Returns: dict of profiles
     """
     if df.empty:
         return {}
         
+    # ... (Constants Omitted for brevity, but I should be careful not to delete them if I use replace_file_content)
+    # Actually, I should use a smaller chunk if I can, but the function start is changing.
+    # Let me include the constants to be safe or use a targeted replacement.
+    
     # Constants
-    # TODO: Use rider specific mass if available in DF or pass as arg?
-    # For now assuming 85kg total system mass for physics learning is "okay" as baseline,
-    # but ideally we want (Rider + Bike) mass. 
-    # Since we don't know rider mass during "Learning" phase unless passed, we'll assume standard.
-    # The learned CdA/Crr will be slightly biased if real mass differs significantly,
-    # but self-consistent if consistent mass used in prediction.
     MASS = 85.0 # kg
     G = 9.81
     RHO = 1.225
@@ -67,10 +68,15 @@ def learn_bike_physics(df):
             
             crr, cda = popt
             
+            # Resolve Name
+            name = gear_id
+            if gear_map and gear_id in gear_map:
+                name = gear_map[gear_id]
+            
             profiles[gear_id] = {
                 'crr': float(crr),
                 'cda': float(cda),
-                'name': gear_id 
+                'name': name
             }
         except Exception as e:
             # print(f"  -> Failed to fit {gear_id}: {e}")

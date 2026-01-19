@@ -23,6 +23,12 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key')
 
+# Security Headers
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+# In production, set this to True. For localhost Docker, False is fine.
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV') == 'production'
+
 # Database Config
 db_path = os.path.join(os.path.abspath(os.getcwd()), 'users.db')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', f'sqlite:///{db_path}')
@@ -158,59 +164,101 @@ def get_valid_client(user):
         client.access_token = user.access_token
     return client
 
+from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, Response, stream_with_context
+
+# ... (imports remain same)
+
 @app.route('/sync')
-def sync():
+def sync_page():
     user = get_current_user()
     if not user:
         return redirect(url_for('login'))
-        
-    try:
-        # 1. Get Client
-        client = get_valid_client(user)
-        
-        # 2. Fetch Data (In-Memory)
-        print("Starting Sync Pipeline...")
-        df = fetch_recent_activities(client, limit=50) # Fetch last 50 rides
-        
-        if df.empty:
-            return "No ride data found to analyze.", 400
-            
-        print(f"Fetched {len(df)} data points.")
-        
-        # 3. Train Physiology
-        durations, powers = extract_power_profile(df)
-        cp, w_prime = calculate_cp_and_w_prime(durations, powers)
-        
-        if cp:
-            phys_data = {'cp': cp, 'w_prime': w_prime}
-            # Save or Update
-            model = MinerModel.query.filter_by(user_id=user.id, model_type='physiology').first()
-            if not model:
-                model = MinerModel(user_id=user.id, model_type='physiology')
-                db.session.add(model)
-            model.data = pickle.dumps(phys_data)
-            model.updated_at = db.func.now()
-            print(f"Saved Physiology: {phys_data}")
+    return render_template('sync.html', user=user)
 
-        # 4. Train Bike Physics
-        bikes = learn_bike_physics(df)
-        if bikes:
-            # Save or Update
-            model = MinerModel.query.filter_by(user_id=user.id, model_type='bike_profiles').first()
-            if not model:
-                model = MinerModel(user_id=user.id, model_type='bike_profiles')
-                db.session.add(model)
-            model.data = pickle.dumps(bikes)
-            model.updated_at = db.func.now()
-            print(f"Saved Bikes: {bikes.keys()}")
+@app.route('/sync_stream')
+def sync_stream():
+    user = get_current_user()
+    if not user:
+        return "Unauthorized", 401
+        
+    def generate():
+        try:
+            # 1. Get Client
+            client = get_valid_client(user)
             
-        db.session.commit()
-        
-        return redirect(url_for('index'))
-        
-    except Exception as e:
-        traceback.print_exc()
-        return f"Sync failed: {e}", 500
+            yield f"data: Connected to Strava. Fetching recent rides...\n\n"
+            
+            # 1b. Fetch Bike Names (for UI)
+            try:
+                athlete = client.get_athlete()
+                gear_map = {g.id: g.name for g in athlete.bikes}
+                yield f"data: Found {len(gear_map)} bikes in your garage ({', '.join(gear_map.values())}).\n\n"
+            except Exception as e:
+                gear_map = {}
+                yield f"data: Warning: Could not fetch bike names ({str(e)})\n\n"
+
+            # 2. Fetch Data (Streaming)
+            fetch_gen = fetch_recent_activities(client, limit=50, yield_progress=True)
+            
+            df = None
+            for item in fetch_gen:
+                if item['type'] == 'progress':
+                    yield f"data: {item['msg']}\n\n"
+                elif item['type'] == 'error':
+                    yield f"data: Error: {item['msg']}\n\n"
+                elif item['type'] == 'result':
+                    df = item['data']
+            
+            if df is None or df.empty:
+                yield f"data: No ride data found to analyze.\n\n"
+                yield f"data: DONE\n\n"
+                return
+                
+            yield f"data: Analyze {len(df)} data points...\n\n"
+            
+            # 3. Train Physiology
+            yield f"data: calculating critical power...\n\n"
+            durations, powers = extract_power_profile(df)
+            cp, w_prime = calculate_cp_and_w_prime(durations, powers)
+            
+            if cp:
+                phys_data = {'cp': cp, 'w_prime': w_prime}
+                # Save or Update
+                # Note: We must manage DB session carefully in generator context
+                with app.app_context():
+                     model = MinerModel.query.filter_by(user_id=user.id, model_type='physiology').first()
+                     if not model:
+                         model = MinerModel(user_id=user.id, model_type='physiology')
+                         db.session.add(model)
+                     model.data = pickle.dumps(phys_data)
+                     model.updated_at = db.func.now()
+                     db.session.commit()
+                yield f"data: CP: {cp:.0f}W, W': {w_prime:.0f}J saved.\n\n"
+
+            # 4. Train Bike Physics
+            yield f"data: Learning bike aerodynamics (Crr/CdA)...\n\n"
+            bikes = learn_bike_physics(df, gear_map=gear_map)
+            if bikes:
+                # Save or Update
+                with app.app_context():
+                    model = MinerModel.query.filter_by(user_id=user.id, model_type='bike_profiles').first()
+                    if not model:
+                        model = MinerModel(user_id=user.id, model_type='bike_profiles')
+                        db.session.add(model)
+                    model.data = pickle.dumps(bikes)
+                    model.updated_at = db.func.now()
+                    db.session.commit()
+                yield f"data: Learned profiles for {len(bikes)} bikes.\n\n"
+            
+            yield f"data: Sync Complete!\n\n"
+            yield f"data: DONE\n\n"
+            
+        except Exception as e:
+            traceback.print_exc()
+            yield f"data: Error: {str(e)}\n\n"
+            yield f"data: DONE\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 @app.route('/generate', methods=['POST'])
 def generate():
