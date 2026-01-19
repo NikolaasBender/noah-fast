@@ -3,7 +3,7 @@ import pytest
 def test_index(client):
     rv = client.get('/')
     assert rv.status_code == 200
-    assert b"Race Simulator" in rv.data
+    assert b"AI Race Planner" in rv.data
 
 def test_generate_no_data(client):
     rv = client.post('/generate', data={})
@@ -40,9 +40,10 @@ def test_generate_success(client):
         mock_plan['cues'] = ["", ""]
         mock_plan['kcal_hr'] = [500, 500]
         mock_plan['carbs_hr'] = [60, 60]
+        mock_plan['segment_id'] = [1, 1]
         
         with patch('app.optimize_pacing', return_value=mock_plan):
-            rv = client.post('/generate', data={'route_url': 'http://example.com'})
+            rv = client.post('/generate_file', data={'route_url': 'http://example.com'})
             
             # Should be 200 and return a file
             assert rv.status_code == 200

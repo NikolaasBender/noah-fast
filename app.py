@@ -11,8 +11,9 @@ import joblib
 import pickle
 import time
 from dotenv import load_dotenv
-from models import db, User, MinerModel
+# models import removed for stateless refactor
 
+# Pipeline Imports
 # Pipeline Imports
 from fetch_data import fetch_recent_activities
 from modeling.physiology import extract_power_profile, calculate_cp_and_w_prime
@@ -21,70 +22,73 @@ from modeling.resistance import learn_bike_physics
 load_dotenv()
 
 app = Flask(__name__)
+# IMPORTANT: In production, use a fixed secret key!
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key')
 
 # Security Headers
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-# In production, set this to True. For localhost Docker, False is fine.
 app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV') == 'production'
-
-# Database Config
-db_path = os.path.join(os.path.abspath(os.getcwd()), 'users.db')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', f'sqlite:///{db_path}')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-db.init_app(app)
-
-# Create Tables
-with app.app_context():
-    db.create_all()
 
 MODEL_DIR = 'data/models'
 CLIENT_ID = os.getenv('STRAVA_CLIENT_ID')
 CLIENT_SECRET = os.getenv('STRAVA_CLIENT_SECRET')
 
 # Default Physiology
-cp = 250
-w_prime = 20000
+default_cp = 250
+default_w_prime = 20000
+
+class User:
+    """Simple wrapper around session dict for compatibility"""
+    def __init__(self, data):
+        self.data = data
+        self.firstname = data.get('firstname')
+        self.lastname = data.get('lastname')
+        self.strava_id = data.get('strava_id')
+        self.access_token = data.get('access_token')
+        self.refresh_token = data.get('refresh_token')
+        self.expires_at = data.get('expires_at')
+
+    def update_tokens(self, access, refresh, expires):
+        self.data['access_token'] = access
+        self.data['refresh_token'] = refresh
+        self.data['expires_at'] = expires
+        self.access_token = access
+        # Session must be marked modified if accessed via get_current_user wrapper?
+        # Actually simplest is to write back to session['user']
+        session['user'] = self.data
+        session.modified = True
 
 # Helper: Get Current User
 def get_current_user():
-    user_id = session.get('user_id')
-    if user_id:
-        return User.query.get(user_id)
+    user_data = session.get('user')
+    if user_data:
+        return User(user_data)
     return None
 
 @app.route('/')
 def index():
     user = get_current_user()
     
-    # Default values (Guest)
-    current_cp = 250
-    current_w_prime = 20000
+    # Defaults
+    current_cp = default_cp
+    current_w_prime = default_w_prime
     current_bikes = {}
     
-    # Logic to load User models if logged in
-    # This comes from the DB in stateless mode
+    # Load from Session if available
     if user:
-        # Try fetch physiology
-        phys_model = MinerModel.query.filter_by(user_id=user.id, model_type='physiology').first()
-        if phys_model:
-            phys = pickle.loads(phys_model.data)
-            current_cp = phys['cp']
-            current_w_prime = phys['w_prime']
-
-        # Try fetch bikes
-        bike_model = MinerModel.query.filter_by(user_id=user.id, model_type='bike_profiles').first()
-        if bike_model:
-            current_bikes = pickle.loads(bike_model.data)
+        if 'physiology' in session:
+            current_cp = session['physiology'].get('cp', default_cp)
+            current_w_prime = session['physiology'].get('w_prime', default_w_prime)
+            
+        if 'bikes' in session:
+            current_bikes = session['bikes']
     
-    # Fallback to local file defaults if Guest (or if user has no model yet)
+    # Fallback to local file defaults if Guest
     if not user and not current_bikes:
         try:
              with open(os.path.join(MODEL_DIR, 'bike_profiles.json'), 'r') as f:
                 current_bikes = json.load(f)
-             # Phys defaults are 250/20000
         except: pass
 
     return render_template('index.html', 
@@ -120,23 +124,20 @@ def authorized():
         client.access_token = token_response['access_token']
         athlete = client.get_athlete()
         
-        # Check if user exists
-        user = User.query.filter_by(strava_id=athlete.id).first()
-        if not user:
-            user = User(strava_id=athlete.id)
-            db.session.add(user)
-            
-        user.firstname = athlete.firstname
-        user.lastname = athlete.lastname
-        user.access_token = token_response['access_token']
-        user.refresh_token = token_response['refresh_token']
-        user.expires_at = token_response['expires_at']
+        # Store User Data in Client-Side Session
+        user_data = {
+            'strava_id': athlete.id,
+            'firstname': athlete.firstname,
+            'lastname': athlete.lastname,
+            'access_token': token_response['access_token'],
+            'refresh_token': token_response['refresh_token'],
+            'expires_at': token_response['expires_at']
+        }
         
-        db.session.commit()
+        session.clear() # Wipe any old session
+        session['user'] = user_data
         
-        session['user_id'] = user.id
-        
-        # Trigger Sync? For V1, maybe redirect to a sync page or just index?
+        # Trigger Sync?
         return redirect(url_for('index'))
         
     except Exception as e:
@@ -145,22 +146,24 @@ def authorized():
 
 @app.route('/logout')
 def logout():
-    session.pop('user_id', None)
+    session.clear() # Nuke the cookie
     return redirect(url_for('index'))
 
 def get_valid_client(user):
     client = Client(access_token=user.access_token)
     if time.time() > user.expires_at:
-        print(f"Refreshing token for {user.strava_id}")
+        print(f"Refreshing token for {user.firstname}")
         refresh_response = client.refresh_access_token(
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
             refresh_token=user.refresh_token
         )
-        user.access_token = refresh_response['access_token']
-        user.refresh_token = refresh_response['refresh_token']
-        user.expires_at = refresh_response['expires_at']
-        db.session.commit()
+        # Update session via User wrapper
+        user.update_tokens(
+            refresh_response['access_token'],
+            refresh_response['refresh_token'],
+            refresh_response['expires_at']
+        )
         client.access_token = user.access_token
     return client
 
@@ -189,12 +192,14 @@ def sync_stream():
             yield f"data: Connected to Strava. Fetching recent rides...\n\n"
             
             # 1b. Fetch Bike Names (for UI)
+            gear_map = {}
             try:
                 athlete = client.get_athlete()
-                gear_map = {g.id: g.name for g in athlete.bikes}
+                if hasattr(athlete, 'bikes'):
+                    for bike in athlete.bikes:
+                        gear_map[bike.id] = bike.name
                 yield f"data: Found {len(gear_map)} bikes in your garage ({', '.join(gear_map.values())}).\n\n"
             except Exception as e:
-                gear_map = {}
                 yield f"data: Warning: Could not fetch bike names ({str(e)})\n\n"
 
             # 2. Fetch Data (Streaming)
@@ -221,34 +226,27 @@ def sync_stream():
             durations, powers = extract_power_profile(df)
             cp, w_prime = calculate_cp_and_w_prime(durations, powers)
             
+            phys_data = {}
             if cp:
                 phys_data = {'cp': cp, 'w_prime': w_prime}
-                # Save or Update
-                # Note: We must manage DB session carefully in generator context
-                with app.app_context():
-                     model = MinerModel.query.filter_by(user_id=user.id, model_type='physiology').first()
-                     if not model:
-                         model = MinerModel(user_id=user.id, model_type='physiology')
-                         db.session.add(model)
-                     model.data = pickle.dumps(phys_data)
-                     model.updated_at = db.func.now()
-                     db.session.commit()
-                yield f"data: CP: {cp:.0f}W, W': {w_prime:.0f}J saved.\n\n"
+                yield f"data: CP: {cp:.0f}W, W': {w_prime:.0f}J calculated.\n\n"
 
             # 4. Train Bike Physics
             yield f"data: Learning bike aerodynamics (Crr/CdA)...\n\n"
             bikes = learn_bike_physics(df, gear_map=gear_map)
+            bike_data = {}
             if bikes:
-                # Save or Update
-                with app.app_context():
-                    model = MinerModel.query.filter_by(user_id=user.id, model_type='bike_profiles').first()
-                    if not model:
-                        model = MinerModel(user_id=user.id, model_type='bike_profiles')
-                        db.session.add(model)
-                    model.data = pickle.dumps(bikes)
-                    model.updated_at = db.func.now()
-                    db.session.commit()
+                bike_data = bikes # It's already a serializable dict (if learn_bike_physics returns plain dicts)
+                # Ensure bike objects are dicts not BikeProfile objects
+                # learn_bike_physics returns dict of dicts: {gear_id: {'name':..., 'crr':...}}
                 yield f"data: Learned profiles for {len(bikes)} bikes.\n\n"
+            
+            # 5. LOOPBACK SAVE: Send data to client to post back to session
+            payload = {
+                'physiology': phys_data,
+                'bikes': bike_data
+            }
+            yield f"data: MODEL_UPDATE: {json.dumps(payload)}\n\n"
             
             yield f"data: Sync Complete!\n\n"
             yield f"data: DONE\n\n"
@@ -260,6 +258,26 @@ def sync_stream():
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
+@app.route('/save_model', methods=['POST'])
+def save_model():
+    """Loopback route to save models into session cookie"""
+    if not get_current_user():
+        return "Unauthorized", 401
+    
+    data = request.json
+    if not data:
+        return "No data", 400
+        
+    if 'physiology' in data:
+        print("Saving Physiology to Session")
+        session['physiology'] = data['physiology']
+        
+    if 'bikes' in data:
+        print("Saving Bikes to Session")
+        session['bikes'] = data['bikes']
+        
+    return "Saved", 200
+
 # Helper: Core Planning Logic
 def get_plan_dataframe(form):
     route_url = form.get('route_url')
@@ -268,8 +286,8 @@ def get_plan_dataframe(form):
     # Rider Settings (with defaults)
     try:
         user_mass = float(form.get('rider_mass', 85.0))
-        user_cp = float(form.get('cp', cp))
-        user_w_prime = float(form.get('w_prime', w_prime))
+        user_cp = float(form.get('cp', default_cp))
+        user_w_prime = float(form.get('w_prime', default_w_prime))
         
         # Delusion Logic (0-10 scale, each step adds 1%)
         delusion_lvl = int(form.get('delusion', 0))
@@ -298,8 +316,11 @@ def get_plan_dataframe(form):
 @app.route('/generate', methods=['POST'])
 def generate():
     try:
-        plan_df, course_df = get_plan_dataframe(request.form)
-        
+        try:
+            plan_df, course_df = get_plan_dataframe(request.form)
+        except ValueError as e:
+            return f"Error: {str(e)}", 400
+            
         # Prepare Data for Preview Template
         # Need to aggregate segments into a list of dicts for Jinja
         # The optimizer returns resampled 100m chunks.
@@ -369,7 +390,10 @@ def generate():
 @app.route('/generate_file', methods=['POST'])
 def generate_file():
     try:
-        plan_df, course_df = get_plan_dataframe(request.form)
+        try:
+            plan_df, course_df = get_plan_dataframe(request.form)
+        except ValueError as e:
+            return f"Error: {str(e)}", 400
         
         # 3. Export to Memory
         mem = io.BytesIO()
