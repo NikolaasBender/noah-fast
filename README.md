@@ -3,7 +3,7 @@
 
 # 'AI' Race Simulator
 
-Determine the optimal pacing and fueling strategy for your next cycling race using Machine Learning.
+Determine the optimal pacing and fueling strategy for your next cycling race using Physics & Physiology.
 
 ## Overview
 
@@ -12,69 +12,64 @@ Race Simulator takes a Strava route and your physiological parameters (Critical 
 - 💨 Aerodynamic drag
 - 🔋 Anaerobic work capacity (W') depletion and reconstitution
 
-The output is a TCS/GPX file that you can load onto your Garmin or Wahoo head unit to guide your power output during the race.
+The output is a TCX file that you can load onto your Garmin or Wahoo head unit to guide your power output during the race.
 
 ## Features
 
 - **Route Import**: Pulls route data directly from Strava.
 - **Pacing Optimization**: Uses a physics-based model to distribute your energy optimally across the course.
-- **Export**: Generates `.tcx` files compatible with major cycling computers.
+- **Stateless Architecture**: Secure and privacy-focused; no user data is persisted on disk. Session data lives in encrypted cookies.
+- **Auto-Export**: Generates `.tcx` files compatible with major cycling computers.
 
 ## Prerequisites
 
 - **Docker** (Recommended)
-- OR **Python 3.9+**
+- OR **Python 3.10+**
 
-## Setup
+## Quick Start (Docker)
 
 1. **Clone the repository**
    ```bash
-   git clone `https://github.com/NikolaasBender/noah-fast.git`
+   git clone https://github.com/NikolaasBender/noah-fast.git
    cd race_simulator
    ```
 
 2. **Configure Environment**
-   Copy the example environment file:
    ```bash
    cp .env.example .env
-   ```
-   Edit `.env` and add your Strava API keys:
-   ```
-   STRAVA_CLIENT_ID=your_id
-   STRAVA_CLIENT_SECRET=your_secret
+   # Edit .env and add STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET
    ```
 
-## Usage
+3. **Run**
+   ```bash
+   docker compose up --build
+   ```
+   Access the web interface at `http://localhost:8080`.
 
-### Using Docker (Recommended)
+## Deployment
 
-Install Docker and Docker Compose.
-- **Ubuntu**:
-  ```bash
-  sudo apt update
-  sudo apt install docker.io docker-compose
-  ```
-- **macOS**: Install [Docker Desktop](https://www.docker.com/products/docker-desktop/).
-- **Windows**: Stop paying a fortune to Microsoft for a spyware-laden OS. Switch to Linux.
+### Railway / Cloud
+This project is configured for easy deployment on platforms like Railway. 
 
-Build and run the application:
-```bash
-docker-compose up --build
-```
-Access the web interface at `http://localhost:8080`.
+1. **Environment Variables**: Refer to [DEPLOYMENT_VARS.md](DEPLOYMENT_VARS.md) for the required configuration.
+2. **Docker**: The `Dockerfile` is production-ready and supports dynamic port binding.
+3. **CI/CD**: A GitHub Action (`.github/workflows/publish.yml`) is included to automatically publish the Docker image to GHCR on pushes to `main`.
 
-### Running Locally
+## Development
+
+### Local Setup (No Docker)
 
 1. **Install Dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Run the Application**
+2. **Run**
    ```bash
-   python app.py
+   # Linux/Mac
+   export FLASK_APP=app.py
+   flask run --port=8080
    ```
-   Access the web interface at `http://localhost:8080`.
 
 ## Project Structure
 
