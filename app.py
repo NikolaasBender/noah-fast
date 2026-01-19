@@ -258,6 +258,10 @@ def sync_stream():
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
+@app.route('/favicon.ico')
+def favicon():
+    return send_file('static/favicon.ico', mimetype='image/x-icon')
+
 @app.route('/save_model', methods=['POST'])
 def save_model():
     """Loopback route to save models into session cookie"""
