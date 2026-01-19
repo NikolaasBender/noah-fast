@@ -21,7 +21,10 @@ from modeling.resistance import learn_bike_physics
 
 load_dotenv()
 
+from werkzeug.middleware.proxy_fix import ProxyFix
+
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 # IMPORTANT: In production, use a fixed secret key!
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key')
 
