@@ -110,7 +110,7 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
     # 1. Initial Classification
     def classify(grad):
         if grad > 3.0: return 'Climb'
-        elif grad < -2.0: return 'Descent'
+        elif grad < -0.5: return 'Descent'
         else: return 'Flat'
         
     resampled_df['type'] = resampled_df['gradient'].apply(classify)
@@ -170,8 +170,10 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
         speed = est_speed(p, seg['avg_grad'])
         seg['duration_s'] = seg['dist'] / speed
 
-    # 4. Merge Small Segments (< 4 mins / 240s)
-    MIN_DURATION = 240 # 4 mins
+    # 4. Merge Small Segments
+    # Climbs: Min 60s. Others: Min 240s.
+    MIN_DURATION_CLIMB = 60
+    MIN_DURATION_DEFAULT = 240
     
     changed = True
     while changed:
@@ -186,8 +188,11 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
                 
             seg = segments[i]
             
+            # Determine threshold
+            min_dur = MIN_DURATION_CLIMB if seg['type'] == 'Climb' else MIN_DURATION_DEFAULT
+            
             # Check if too small
-            if seg['duration_s'] < MIN_DURATION:
+            if seg['duration_s'] < min_dur:
                 # Try to merge with Next
                 if i < len(segments) - 1:
                     next_seg = segments[i+1]
@@ -199,8 +204,9 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
                         w2 = next_seg['dist'] / total_dist
                         avg_grad = seg['avg_grad'] * w1 + next_seg['avg_grad'] * w2
                         
-                        # New Type? Favor the larger one
-                        if next_seg['dist'] > seg['dist']:
+                        # New Type? Favor the larger one OR if one is a "Significant Climb", maybe keep it?
+                        # Standard logic: favor larger duration
+                        if next_seg['duration_s'] > seg['duration_s']:
                             new_type = next_seg['type']
                         else:
                             new_type = seg['type']
@@ -230,6 +236,8 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
                              w1 = prev['dist'] / total_dist
                              w2 = seg['dist'] / total_dist
                              avg_grad = prev['avg_grad'] * w1 + seg['avg_grad'] * w2
+                             
+                             # Type logic? Favor previous (larger) usually
                              merged = {
                                  'type': prev['type'],
                                  'surface': prev['surface'],
@@ -313,7 +321,48 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
         resampled['surface'] = course_df['surface'].iloc[idx].values
     else:
         resampled['surface'] = 'Paved'
+        
+    # --- Path Analysis: Sinuosity / Technicality ---
+    def calculate_bearing(lat1, lon1, lat2, lon2):
+        # Convert to radians
+        lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+        dlon = lon2 - lon1
+        x = np.sin(dlon) * np.cos(lat2)
+        y = np.cos(lat1) * np.sin(lat2) - np.sin(lat1) * np.cos(lat2) * np.cos(dlon)
+        initial_bearing = np.arctan2(x, y)
+        # Convert to degrees and normalize to 0-360
+        deg = np.degrees(initial_bearing)
+        return (deg + 360) % 360
+
+    # Vectorized bearing calculation
+    # Shift arrays to get next point
+    lat1 = resampled['lat'].values[:-1]
+    lon1 = resampled['lon'].values[:-1]
+    lat2 = resampled['lat'].values[1:]
+    lon2 = resampled['lon'].values[1:]
     
+    bearings = calculate_bearing(lat1, lon1, lat2, lon2)
+    # Pad last value
+    bearings = np.append(bearings, bearings[-1] if len(bearings) > 0 else 0)
+    resampled['bearing'] = bearings
+    
+    # Calculate Bearing *Change* (absolute, accounting for wrap)
+    # diff: 350 -> 10 = 20 deg turn (not -340)
+    # diff = abs(b2 - b1)
+    # if diff > 180: diff = 360 - diff
+    b_diff = np.abs(np.diff(bearings, prepend=bearings[0]))
+    b_diff = np.where(b_diff > 180, 360 - b_diff, b_diff)
+    resampled['bearing_diff'] = b_diff
+    
+    # Sinuosity Metric: Rolling sum of bearing changes over e.g. 300m (3 points)
+    # "Technical" if lots of turning.
+    resampled['sinuosity'] = pd.Series(b_diff).rolling(window=3, center=True).mean().fillna(0)
+    
+    # Define Technical Threshold: Average > 15 degrees change per 100m?
+    # A 90 deg turn in 100m is 90.
+    # A gentler curve might be 5-10.
+    TECHNICAL_THRESHOLD = 15.0 
+
     # 2. Segment
     segments = create_smart_segments(resampled, cp, rider_mass=rider_mass)
     
@@ -325,9 +374,6 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
     resampled['cues'] = "" 
     
     # LSTM Prep
-    # We need to construct a sequence: [watts, hr, cad, w_bal]
-    # For simulation, we don't have true HR/Cadence. We must approximate.
-    # HR ~ Power (linear lag). Cadence ~ 90.
     recent_history = [] 
     
     cumulative_time = 0
@@ -338,67 +384,132 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
         'Gravel': 1.6,
         'Dirt': 1.8
     }
-    
-    # ... (Segments loop) ...
-    for seg_id, seg in enumerate(segments):
+
+    # Helper to calc target power for a segment
+    def get_segment_power(seg):
         # Determine segment surface (majority wins or start point)
-        # Using the start idx to check surface in original resampled df
         seg_start = seg['start_idx']
         s_type = resampled.loc[seg_start, 'surface'] if 'surface' in resampled.columns else 'Paved'
         crr_mult = SURFACE_CRR_MAP.get(s_type, 1.0)
-        
-        # Effective params for this segment
         eff_crr = crr * crr_mult
         
-        # Base Power Strategy
+        # Determine Technicality
+        # Average sinuosity of the segment
+        seg_sinuosity = resampled.loc[seg['start_idx']:seg['end_idx'], 'sinuosity'].mean()
+        is_technical = seg_sinuosity > TECHNICAL_THRESHOLD
+
         base_type = seg['type'].split(" ")[0] 
         grad = seg['avg_grad']
         
+        p_t = cp * 0.85 # Default
+        
         if base_type == 'Climb':
-            p_target = cp * 1.05 
-            if grad > 6: p_target = cp * 1.15
+            p_t = cp * 1.05 
+            if grad > 6: p_t = cp * 1.15
         elif base_type == 'Descent':
-            # "Coasting Logic"
-            # When does gravity overcome resistance?
-            # F_gravity > F_roll + F_aero (at some V)
-            # F_g = m*g*sin(theta) ~ m*g*grad
-            # F_r = m*g*cos(theta)*Crr ~ m*g*Crr
-            # COAST THRESHOLD: when grad < -Crr (approx, in decimal)
-            # Paved Crr ~0.005 -> -0.5% grade
-            # Gravel Crr ~0.008 -> -0.8% grade
-            
             coast_threshold_grade = -(eff_crr * 100)
             
-            # If steeper than threshold (more negative), we can coast
-            if grad < coast_threshold_grade - 0.5: # buffer
-                p_target = 0 # Coast
+            # Technical Descent Override
+            if is_technical:
+                # Winding descent: Safety first, cornering means inconsistent power.
+                # Often coasting into turns, sprinting out. Avg power lower.
+                # Let's be conservative: Coast (0W).
+                p_t = 0
+            elif grad < coast_threshold_grade - 0.5: 
+                p_t = 0 
             elif grad < coast_threshold_grade: 
-                 p_target = cp * 0.1 # Soft pedal
+                 p_t = cp * 0.1 
             else:
-                 # Shallow descent where friction dominates (esp gravel)
-                 # Treat closer to Flat
-                 p_target = cp * 0.70
-                 
+                 p_t = cp * 0.70
         else: # Flat
-            p_target = cp * 0.85
-            if s_type != 'Paved':
-               # Increase power slightly on flat gravel to maintain momentum/speed? 
-               # Or decrease to save energy? 
-               # Optimal control usually suggests smoothing effort. 
-               # Let's keep constant power -> resulting speed drops.
-               pass
+            if is_technical:
+                 # Technical flat? (Criterium?)
+                 # Reduced power for cornering?
+                 p_t = cp * 0.75
+            else:
+                 p_t = cp * 0.85
+            
+        return p_t
 
-        # ... (LSTM Logic Placeholder) ...
+    # --- Pre-Calculation & Merging Pass ---
+    # 1. Calc initial power
+    for seg in segments:
+        seg['p_target'] = get_segment_power(seg)
 
+    # 2. Merge by Power (diff <= 10W)
+    #    AND Duration Constraint (< 20 mins / 1200s)
+    MAX_MERGE_DURATION = 1200
+    
+    if len(segments) > 0:
+        merged_segments = []
+        curr = segments[0]
+        
+        for next_seg in segments[1:]:
+            diff = abs(curr['p_target'] - next_seg['p_target'])
+            
+            # Predict new duration
+            new_dur = curr['duration_s'] + next_seg['duration_s']
+            
+            if diff <= 10 and new_dur <= MAX_MERGE_DURATION:
+                # Merge next into curr
+                total_dist = curr['dist'] + next_seg['dist']
+                # Weighted grad
+                w1 = curr['dist'] / total_dist
+                w2 = next_seg['dist'] / total_dist
+                new_grad = curr['avg_grad'] * w1 + next_seg['avg_grad'] * w2
+                
+                # Update curr
+                curr['end_idx'] = next_seg['end_idx']
+                curr['dist'] = total_dist
+                curr['avg_grad'] = new_grad
+                curr['duration_s'] = new_dur
+                
+                # Re-calc Power for the new merged block (Type might have changed? No, we kept start type)
+                curr['p_target'] = get_segment_power(curr)
+                
+            else:
+                merged_segments.append(curr)
+                curr = next_seg
+        
+        merged_segments.append(curr)
+        segments = merged_segments
+
+    # 3. Add Variety to Flat Segments
+    #    If we have consecutive flats, alternate power (+10W)
+    variety_toggle = False
+    for seg in segments:
+        base_type = seg['type'].split(" ")[0]
+        if base_type == 'Flat':
+            if variety_toggle:
+                seg['p_target'] += 10.0
+            variety_toggle = not variety_toggle
+        else:
+            variety_toggle = False # Reset sequence on non-flat
+
+    # --- Main Simulation Loop ---
+    for seg_id, seg in enumerate(segments):
+        # Determine segment surface (majority wins or start point)
+        seg_start = seg['start_idx']
+        s_type = resampled.loc[seg_start, 'surface'] if 'surface' in resampled.columns else 'Paved'
+        crr_mult = SURFACE_CRR_MAP.get(s_type, 1.0)
+        eff_crr = crr * crr_mult
+        
+        p_target = seg['p_target']
+        grad = seg['avg_grad']
+        
         # Refine Power based on W' availability
         speed = get_speed(p_target, grad, eff_crr, cda, rider_mass)
+        # Avoid div by zero
+        if speed < 0.1: speed = 0.1
         duration = seg['dist'] / speed
         w_cost = (p_target - cp) * duration
         
         if p_target > cp:
             if current_w_bal - w_cost < 0:
+                # Bonk mitigation
                 p_target = cp * 0.98
                 speed = get_speed(p_target, grad, eff_crr, cda, rider_mass)
+                if speed < 0.1: speed = 0.1
                 duration = seg['dist'] / speed
                 w_cost = (p_target - cp) * duration
         
@@ -407,15 +518,9 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
         if current_w_bal > w_prime: current_w_bal = w_prime
         
         # Update History (Approximated)
-        # Add N seconds worth of data
-        # For efficiency, just add 1 point representing the Segment?
-        # Or detailed. Detailed is better for LSTM.
-        # Let's add 1 point per 100m for history approx
         sim_hr = 60 + (p_target / cp) * 110 # Crude HR model
         sim_cad = 90 if p_target > 0 else 0
         
-        # We process this segment length in chunks for history? 
-        # Just appending end-state for now to keep loop fast.
         recent_history.append([p_target, sim_hr, sim_cad, current_w_bal])
         
         # Assign to 100m chunks
