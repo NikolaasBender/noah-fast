@@ -7,6 +7,9 @@
     <title>Race Plan Preview - AI Race Planner</title>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <style>
         .hero {
             background: linear-gradient(135deg, #FF5722 0%, #FF9800 100%);
@@ -14,6 +17,16 @@
             padding: 2rem;
             border-radius: 0 0 20px 20px;
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        #map {
+            height: 400px;
+            width: 100%;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+            z-index: 1;
+            /* Ensure it stays below sticky header if any, but above background */
         }
 
         .segment-card {
@@ -122,6 +135,9 @@
         </div>
         {% endif %}
 
+        <!-- Map Container -->
+        <div id="map"></div>
+
         <h6 class="text-muted mb-3 ms-2">Directives</h6>
 
         {% for seg in segments %}
@@ -172,5 +188,54 @@
     </div>
 
 </body>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+<script>
+    // Initialize Map
+    // We need to find valid bounds first, so we defer setView.
+    var map = L.map('map');
+
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    }).addTo(map);
+
+    // Load Data
+    var mapSegments = {{ map_data | tojson }};
+
+    var allPoints = [];
+
+    if (mapSegments && mapSegments.length > 0) {
+        mapSegments.forEach(function (seg) {
+            if (seg.points && seg.points.length > 0) {
+                // Leaflet Polylines
+                var polyline = L.polyline(seg.points, {
+                    color: seg.color,
+                    weight: 5,
+                    opacity: 0.8,
+                    lineJoin: 'round'
+                }).addTo(map);
+
+                if (seg.popup) {
+                    polyline.bindPopup(seg.popup);
+                }
+
+                // Add points to bounds
+                seg.points.forEach(p => allPoints.push(p));
+            }
+        });
+
+        // Fit Bounds
+        if (allPoints.length > 0) {
+            map.fitBounds(allPoints, { padding: [20, 20] });
+        }
+    } else {
+        // Fallback or Empty
+        map.setView([0, 0], 2);
+    }
+</script>
 
 </html>

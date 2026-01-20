@@ -347,6 +347,7 @@ def generate():
         # We need to reconstruct the "Directives" / Segments from segment_id
         
         preview_segments = []
+        map_segments = []
         grouped = plan_df.groupby('segment_id')
         
         for seg_id, group in grouped:
@@ -354,12 +355,34 @@ def generate():
             
             first = group.iloc[0]
             
-            # Extract Cues (stored in the first row of segment usually, or we reconstruct)
-            # The 'cues' column already has formatted text like "Seg 1: Flat (4m) @ 200W"
-            # But let's verify if cues are populated on first row of chunk
+            # --- Map Data ---
+            # Extract coordinates for this segment
+            # Leaflet expects [lat, lon]
+            segment_coords = group[['lat', 'lon']].values.tolist()
             
-            # Reconstruct cleaner object for UI
+            # Subsample if too large? 100m points is fine for render usually.
+            
+            # Determine Color
+            s_type_base = first['cues'].split(':')[1].split('(')[0].strip().split(' ')[0] if ':' in first['cues'] else "Flat"
+            
+            # Hex Colors
+            color_map = {
+                'Climb': '#FF5722',   # Deep Orange
+                'Descent': '#2196F3', # Blue
+                'Flat': '#4CAF50'     # Green
+            }
+            seg_color = color_map.get(s_type_base, '#4CAF50')
+            
+            # Power
             avg_power = group['watts'].mean()
+            
+            map_segments.append({
+                'points': segment_coords,
+                'color': seg_color,
+                'popup': f"<b>{s_type_base}</b><br>Avg Power: {int(avg_power)}W"
+            })
+            
+            # --- List Data ---
             duration_s = group['duration_s'].sum()
             dist_km = group['distance'].min() / 1000.0
             
@@ -395,6 +418,7 @@ def generate():
         
         return render_template('plan_preview.html', 
                              segments=preview_segments,
+                             map_data=map_segments,
                              route_name=course_df.attrs.get('name', 'Route'),
                              total_time_str=f"{int(total_time_s//3600)}h {int((total_time_s%3600)//60)}m",
                              avg_power=int(avg_p),
