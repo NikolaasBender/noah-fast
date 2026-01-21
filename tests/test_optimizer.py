@@ -1,22 +1,7 @@
 import pytest
 import numpy as np
 import pandas as pd
-from planning.optimizer import get_speed, create_smart_segments, optimize_pacing
-
-def test_get_speed():
-    # Zero power on flat
-    # Should yield tiny speed (min speed clamp 0.1) or solve to 0? Function has 0.1 clamp
-    v = get_speed(0, 0, crr=0.005, cda=0.32, rider_mass=85)
-    assert v >= 0.1
-    
-    # High power -> High speed
-    v_300 = get_speed(300, 0, crr=0.005, cda=0.32, rider_mass=85)
-    v_400 = get_speed(400, 0, crr=0.005, cda=0.32, rider_mass=85)
-    assert v_400 > v_300
-    
-    # Uphill -> Slower
-    v_climb = get_speed(300, 5, crr=0.005, cda=0.32, rider_mass=85)
-    assert v_climb < v_300
+from planning.optimizer import create_smart_segments, optimize_pacing
 
 def test_segmentation():
     # Create simple data: 1km flat, 1km climb, 1km descent

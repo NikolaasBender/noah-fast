@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from modeling.nutrition import calculate_metabolic_cost, carb_needs_per_hour
 from modeling.physiology import calculate_w_prime_balance
+from modeling.physics_engine import CoastingPredictor
 
 
 import json
@@ -19,88 +20,11 @@ try:
 except:
     pass
 
-def get_speed(power, gradient_percent, crr=0.005, cda=0.32, rider_mass=85.0):
-    """
-    Estimates speed (m/s) for a given power and gradient using a simplified physics model.
-    Robust to descents (Newton-Raphson on Force Balance or Power Balance).
-    """
-
-    grad_decimal = gradient_percent / 100.0
-    # Small angle approx is usually fine, but let's keep trig
-    # But beware gradient_percent large inputs.
-    
-    # Precompute constants
-    # mg * ...
-    # F_grav = mg sin(theta)
-    # F_roll = mg cos(theta) * Crr
-    # We define F_resist_constant (Gravity + Rolling)
-    # BE CAREFUL SIGNS: 
-    # Standard physics: P_total = P_aero + P_roll + P_grav
-    # P_grav = mg * v * sin(theta). (Positive if climbing).
-    # P_roll = mg * v * cos(theta) * Crr
-    
-    # Angles
-    theta = np.arctan(grad_decimal)
-    sin_theta = np.sin(theta)
-    cos_theta = np.cos(theta)
-    
-    # Forces
-    weight = rider_mass * GRAVITY
-    F_grav = weight * sin_theta
-    F_roll = weight * cos_theta * crr
-    
-    # F_static = F_grav + F_roll
-    # P_req = (0.5*rho*cda*v^2 + F_static) * v
-    #       = K*v^3 + F_static*v
-    
-    K = 0.5 * RHO * cda
-    F_static = F_grav + F_roll
-    
-    # If Power > 0, we can use Newton Raphson
-    # f(v) = K v^3 + F_static v - Power = 0
-    # f'(v) = 3 K v^2 + F_static
-    
-    # Initial guessing is critical. 
-    # If F_static is negative (Descent) and Power is small, v can be large.
-    # Terminal velocity (Power=0) -> K v^2 + F_static = 0 => v = sqrt(-F_static / K)
-    
-    if F_static < 0 and power == 0:
-         # Coasting on descent?
-         # Check if gravity overcomes rolling: F_grav + F_roll < 0 ?
-         # i.e. F_grav is negative enough (large descent) 
-         if F_static < 0:
-             return np.sqrt(-F_static / K)
-         else:
-             # Gravity not enough to overcome rolling, and no power -> Stop
-             return 0.1
-
-    v = 10.0 # Default guess
-    
-    # Descent Optimization: Better guess for descents
-    if F_static < 0:
-        # Guess terminal velocity approx
-        v_term = np.sqrt(abs(F_static)/K)
-        v = v_term
-
-    for _ in range(8): # Increased iterations
-        fx = K * v**3 + F_static * v - power
-        fpx = 3 * K * v**2 + F_static
-        
-        if abs(fpx) < 1e-5: 
-            # Flat slope (inflection)? Nudge v
-            v += 1.0 
-            continue
-            
-        v_new = v - fx / fpx
-        
-        if abs(v_new - v) < 0.01:
-            return v_new
-            
-        v = v_new
-        
-        if v < 0.1: v = 0.1 # Clamp min
-        
-    return v
+# def get_speed(power, gradient_percent, crr=0.005, cda=0.32, rider_mass=85.0):
+#     """
+#     REPLACED BY CoastingPredictor in modeling/physics_engine.py
+#     """
+#     pass
 
 def create_smart_segments(resampled_df, cp, rider_mass=85.0):
     """
@@ -158,8 +82,14 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
     
     # 3. Time Estimation (Pre-Merge)
     # Estimate duration based on CP (steady state proxy)
+    # Instantiate temporary predictor for segmentation estimates
+    # (Assuming Paved for segmentation estimates)
+    seg_predictor = CoastingPredictor(mass_kg=rider_mass, cda=0.32, crr=0.005) # defaults
+    
     def est_speed(p, g):
-        return get_speed(p, g, rider_mass=rider_mass)
+        # Quick estimate assuming paved
+        seg_predictor.crr = 0.005
+        return seg_predictor.solve_speed_for_power(g, p)
 
     for seg in segments:
         # heuristic power
@@ -288,7 +218,7 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
             
     return final_segments
 
-def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider_mass=85.0):
+def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider_mass=85.0, match_interval_miles=20.0):
     """
     Generates a pacing plan with smart segmentation, specific bike physics, and LSTM constraints.
     """
@@ -302,6 +232,9 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
         # Sanity bounds (model fitting can be wild)
         if crr < 0.001: crr = 0.001
         if cda < 0.1: cda = 0.1
+        
+    # Initialize Physics Engine
+    predictor = CoastingPredictor(mass_kg=rider_mass, cda=cda, crr=crr)
     
     # 1. Resample (100m)
     max_dist = course_df['distance'].max()
@@ -474,7 +407,45 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
         merged_segments.append(curr)
         segments = merged_segments
 
-    # 3. Add Variety to Flat Segments
+    # 3. Match Burning Strategy
+    #    "One match every 20 miles"
+    #    Identify hardest climbs/sections to burn matches (High Intensity).
+    
+    total_miles = max_dist * 0.000621371
+    num_matches = int(total_miles / match_interval_miles)
+    
+    if num_matches > 0:
+        # Candidate Identification: Climbs
+        candidates = []
+        for i, seg in enumerate(segments):
+            base_type = seg['type'].split(" ")[0]
+            if base_type == 'Climb':
+                # Score by Gradient (Steepest)
+                # Could also score by "Difficulty" = Gradient * Distance?
+                # User asked: "where should rider be trying to break... off the front"
+                # Usually steepest sections.
+                score = seg['avg_grad']
+                candidates.append((score, i))
+        
+        # Sort desc by score
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        # Select Top N
+        selected_indices = [x[1] for x in candidates[:num_matches]]
+        
+        # Apply Match Power
+        # Surge to 120% CP or significant effort
+        MATCH_POWER_FACTOR = 1.2
+        
+        for idx in selected_indices:
+            seg = segments[idx]
+            # Verify duration? If too long (> 5 mins), 120% might be suicide.
+            # But Sim loop handles bonk.
+            # Let's simple apply.
+            seg['p_target'] = max(seg['p_target'], cp * MATCH_POWER_FACTOR)
+            seg['type'] += " (MATCH)"
+
+    # 4. Add Variety to Flat Segments
     #    If we have consecutive flats, alternate power (+10W)
     variety_toggle = False
     for seg in segments:
@@ -497,8 +468,11 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
         p_target = seg['p_target']
         grad = seg['avg_grad']
         
+        
         # Refine Power based on W' availability
-        speed = get_speed(p_target, grad, eff_crr, cda, rider_mass)
+        # Dynamic Crr Update
+        predictor.crr = eff_crr
+        speed = predictor.solve_speed_for_power(grad, p_target)
         # Avoid div by zero
         if speed < 0.1: speed = 0.1
         duration = seg['dist'] / speed
@@ -508,7 +482,8 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
             if current_w_bal - w_cost < 0:
                 # Bonk mitigation
                 p_target = cp * 0.98
-                speed = get_speed(p_target, grad, eff_crr, cda, rider_mass)
+                predictor.crr = eff_crr
+                speed = predictor.solve_speed_for_power(grad, p_target)
                 if speed < 0.1: speed = 0.1
                 duration = seg['dist'] / speed
                 w_cost = (p_target - cp) * duration
@@ -538,13 +513,25 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
     # 4. Final Data Assembly
     resampled['watts'] = resampled['target_power']
     
+    # --- Anti-Stall Logic ---
+    # Fix for segments (like Technical Descents) that force 0W but contain uphill rollers.
+    # If gradient is positive and power is near zero, the physics model stops the rider.
+    # We apply a maintenance power (Zone 2) to simulate momentum/pedaling.
+    # Also applies to shallow descents (>-0.5%) where rolling resistance > gravity.
+    stall_mask = (resampled['gradient'] > -0.8) & (resampled['watts'] < 20)
+    if stall_mask.any():
+        # Apply CP * 0.6 (Endurance pace) or minimum 100W
+        maintenance_p = max(100.0, cp * 0.6)
+        resampled.loc[stall_mask, 'watts'] = maintenance_p
+    
     def calc_row_speed(r):
         s_type = r['surface'] if 'surface' in r else 'Paved'
-        # Check against the local SURFACE_CRR_MAP if possible, or define again. 
         # Since it's inside function scope, we can access it if defined above loop? 
         # Yes, defined at line ~250.
         mult = SURFACE_CRR_MAP.get(s_type, 1.0)
-        return get_speed(r['watts'], r['gradient'], crr * mult, cda, rider_mass)
+        eff_crr_row = crr * mult
+        predictor.crr = eff_crr_row
+        return predictor.solve_speed_for_power(r['gradient'], r['watts'])
 
     resampled['speed_mps'] = resampled.apply(calc_row_speed, axis=1)
     resampled['duration_s'] = 100 / resampled['speed_mps']
