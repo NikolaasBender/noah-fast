@@ -98,7 +98,7 @@ def create_smart_segments(resampled_df, cp, rider_mass=85.0):
         else: p = cp * 0.85
         
         speed = est_speed(p, seg['avg_grad'])
-        if speed < 0.1: speed = 0.1 # Avoid ZeroDivisionError
+        if np.isnan(speed) or speed < 0.1: speed = 0.1 # Avoid ZeroDivisionError and NaN
         seg['duration_s'] = seg['dist'] / speed
 
     # 4. Merge Small Segments
