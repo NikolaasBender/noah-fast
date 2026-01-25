@@ -532,7 +532,9 @@ def optimize_pacing(course_df, cp, w_prime, lstm_model=None, gear_id=None, rider
         mult = SURFACE_CRR_MAP.get(s_type, 1.0)
         eff_crr_row = crr * mult
         predictor.crr = eff_crr_row
-        return predictor.solve_speed_for_power(r['gradient'], r['watts'])
+        s = predictor.solve_speed_for_power(r['gradient'], r['watts'])
+        if np.isnan(s) or s < 0.1: return 0.1
+        return s
 
     resampled['speed_mps'] = resampled.apply(calc_row_speed, axis=1)
     resampled['duration_s'] = 100 / resampled['speed_mps']
