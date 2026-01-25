@@ -12,3 +12,6 @@ Flask-SQLAlchemy
 Requests
 gevent
 colorlog
+matplotlib
+seaborn
+gpxpy
